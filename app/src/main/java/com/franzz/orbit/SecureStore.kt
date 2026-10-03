@@ -60,11 +60,23 @@ class SecureStore(ctx: Context) {
         set(v) = prefs.edit().putBoolean("preview", v).apply()
     var opacity: Int
         get() = prefs.getInt("opacity", 100)
-        set(v) = prefs.edit().putInt("opacity", v.coerceIn(10, 100)).apply()
+        set(v) = prefs.edit().putInt("opacity", v.coerceIn(0, 100)).apply()
     var bx: Float
         get() = prefs.getFloat("bx", -1f)
         set(v) = prefs.edit().putFloat("bx", v).apply()
     var by: Float
         get() = prefs.getFloat("by", -1f)
         set(v) = prefs.edit().putFloat("by", v).apply()
+    var floating: Boolean
+        get() = prefs.getBoolean("floating", false)
+        set(v) = prefs.edit().putBoolean("floating", v).apply()
+    var obx: Int
+        get() = prefs.getInt("obx", -1)
+        set(v) = prefs.edit().putInt("obx", v).apply()
+    var oby: Int
+        get() = prefs.getInt("oby", -1)
+        set(v) = prefs.edit().putInt("oby", v).apply()
+    var autoNext: Boolean
+        get() = prefs.getBoolean("autoNext", false)
+        set(v) = prefs.edit().putBoolean("autoNext", v).apply()
 }

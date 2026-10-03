@@ -1,6 +1,11 @@
 package com.franzz.orbit
 
 import android.annotation.SuppressLint
+import android.content.ClipboardManager
+import android.content.Intent
+import android.net.Uri
+import android.os.Build
+import android.provider.Settings
 import android.app.Activity
 import android.app.AlertDialog
 import android.graphics.Color
@@ -60,6 +65,12 @@ class MainActivity : Activity() {
     private var stopped = false
     private var runId = 0
     private var pendingAuto = false
+    private var pendingBubble = false
+    private var curOp = 100
+    private var canAdvance = false
+    private var pages = 0
+    private var afterNext = false
+    private var lastSig = ""
 
     private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
     private fun toast(m: String) = Toast.makeText(this, m, Toast.LENGTH_LONG).show()
@@ -75,6 +86,8 @@ class MainActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         store = SecureStore(this)
+        pendingBubble = intent.getBooleanExtra("from_bubble", false)
+        intent.removeExtra("from_bubble")
         scannerJs = assets.open("scanner.js").bufferedReader().use { it.readText() }
 
         val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setBackgroundColor(Color.WHITE) }
@@ -124,14 +137,21 @@ class MainActivity : Activity() {
         goBtn = btn("Scan & Fill").apply { setOnClickListener { startRun() } }
         stopBtn = btn("STOP", ERR).apply { visibility = View.GONE; setOnClickListener { stopped = true; finish(runId, "Dihentikan.", ERR) } }
         opLabel = TextView(this).apply { setTextColor(INK); setPadding(0, dp(10), 0, 0) }
-        val seek = SeekBar(this).apply { max = 90; progress = store.opacity - 10 }
+        val seek = SeekBar(this).apply { max = 100; progress = store.opacity }
         seek.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
-            override fun onProgressChanged(s: SeekBar?, p: Int, fromUser: Boolean) { applyOpacity(p + 10) }
+            override fun onProgressChanged(s: SeekBar?, p: Int, fromUser: Boolean) { applyOpacity(p) }
             override fun onStartTrackingTouch(s: SeekBar?) {}
-            override fun onStopTrackingTouch(s: SeekBar?) { store.opacity = seek.progress + 10 }
+            override fun onStopTrackingTouch(s: SeekBar?) { store.opacity = seek.progress }
         })
-        listOf(statusTv, goBtn, stopBtn, opLabel, seek).forEach { panel.addView(it, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT)) }
-        fadeViews.addAll(listOf(statusTv, goBtn, stopBtn))
+        // Baris slider punya latar putih solid supaya tetap terbaca walau panel transparan.
+        val opRow = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL; setPadding(dp(8), 0, dp(8), dp(4))
+            background = GradientDrawable().apply { cornerRadius = dp(10).toFloat(); setColor(Color.WHITE) }
+        }
+        opRow.addView(opLabel); opRow.addView(seek)
+        listOf(statusTv, goBtn, stopBtn, opRow).forEach { panel.addView(it, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT)) }
+        (opRow.layoutParams as LinearLayout.LayoutParams).topMargin = dp(8)
+        fadeViews.add(goBtn)
         stage.addView(panel, FrameLayout.LayoutParams(dp(250), WRAP_CONTENT))
 
         // Robot bubble
@@ -175,11 +195,16 @@ class MainActivity : Activity() {
     }
 
     // ---------- overlay ----------
+    // 0% = transparan penuh. Saat panel terbuka, robot tetap terlihat samar (30%) agar mudah ditemukan.
+    // Teks status dan tombol STOP minimal 60% supaya hasil dan tombol berhenti selalu terbaca.
     private fun applyOpacity(p: Int) {
+        curOp = p
         val a = p / 100f
-        bubble.alpha = a
+        bubble.alpha = if (panel.visibility == View.VISIBLE) maxOf(a, 0.3f) else a
         fadeViews.forEach { it.alpha = a }
-        panelBg.setColor(Color.argb((a * 255).toInt(), 255, 255, 255))
+        statusTv.alpha = maxOf(a, 0.6f)
+        stopBtn.alpha = maxOf(a, 0.6f)
+        panelBg.setColor(Color.argb((maxOf(a, 0.12f) * 255).toInt(), 255, 255, 255))
         opLabel.text = "Opasitas $p%"
     }
     private fun moveBubble(x: Float, y: Float) {
@@ -190,9 +215,10 @@ class MainActivity : Activity() {
     }
     private fun togglePanel() {
         panel.visibility = if (panel.visibility == View.VISIBLE) View.GONE else View.VISIBLE
+        applyOpacity(curOp)
         placePanel()
     }
-    private fun showPanel() { panel.visibility = View.VISIBLE; placePanel() }
+    private fun showPanel() { panel.visibility = View.VISIBLE; applyOpacity(curOp); placePanel() }
     private fun placePanel() {
         if (panel.visibility != View.VISIBLE) return
         val w = dp(250); val s = dp(56)
@@ -228,6 +254,7 @@ class MainActivity : Activity() {
         if (running) return
         if (!store.hasKey()) { setState("Isi API key dulu.", ERR); showPanel(); showSettings(); return }
         running = true; stopped = false
+        pages = 0; afterNext = false; lastSig = ""
         val my = ++runId
         goBtn.visibility = View.GONE; stopBtn.visibility = View.VISIBLE
         showPanel()
@@ -259,6 +286,13 @@ class MainActivity : Activity() {
                 else finish(my, "Tidak ada soal yang didukung di halaman ini.", ERR)
                 return@evaluateJavascript
             }
+            val sig = (0 until qs.length()).joinToString("|") { qs.getJSONObject(it).getString("title") }
+            if (afterNext && sig == lastSig) {
+                afterNext = false
+                finish(my, "Halaman tidak berpindah. Mungkin ada soal wajib yang belum terisi. Periksa manual.", ERR)
+                return@evaluateJavascript
+            }
+            afterNext = false; lastSig = sig
             val key = store.apiKey()
             if (key == null) { finish(my, "API key tidak terbaca. Isi ulang di Pengaturan.", ERR); return@evaluateJavascript }
             setState("Menganalisis ${qs.length()} soal…", BUSY)
@@ -276,6 +310,9 @@ class MainActivity : Activity() {
         setState("Memvalidasi…", BUSY)
         val plans = buildPlans(qs, ans)
         val skipped = qs.length() - plans.size + unsupported
+        val planIds = plans.map { it.id }.toSet()
+        canAdvance = (0 until qs.length()).map { qs.getJSONObject(it) }
+            .filter { it.optBoolean("required") }.all { it.getString("id") in planIds }
         if (plans.isEmpty()) { finish(my, "Tidak ada jawaban yang cukup yakin. Isi manual.", ERR); return }
         if (store.preview) {
             AlertDialog.Builder(this).setTitle("Jawaban yang akan diisi")
@@ -314,7 +351,9 @@ class MainActivity : Activity() {
         if (my != runId) return
         if (stopped) { finish(my, "Dihentikan. $ok terisi sebelum berhenti.", ERR); return }
         if (i >= plans.size) {
-            finish(my, "Selesai: $ok terisi, $bad gagal, $skipped dilewati. Periksa dulu, lalu tekan Lanjut/Kirim sendiri.", OK)
+            if (store.autoNext && canAdvance && bad == 0) { advance(my); return }
+            finish(my, "Selesai: $ok terisi, $bad gagal, $skipped dilewati. Periksa dulu, lalu tekan Lanjut/Kirim sendiri." +
+                (if (store.autoNext) " (Tidak lanjut otomatis: ada soal wajib atau isian yang gagal.)" else ""), OK)
             return
         }
         setState("Mengisi ${i + 1}/${plans.size}…", BUSY)
@@ -329,6 +368,23 @@ class MainActivity : Activity() {
         }, 450)
     }
 
+    // Lanjut otomatis: hanya menekan "Lanjut/Berikutnya". Tidak pernah menekan Kirim.
+    private fun advance(my: Int) {
+        if (my != runId || stopped) return
+        if (++pages > 25) { finish(my, "Berhenti: batas 25 halaman tercapai. Periksa dulu.", ERR); return }
+        setState("Lanjut ke halaman berikutnya…", BUSY)
+        web.evaluateJavascript("__orbit.next()") { raw ->
+            if (my != runId || stopped) return@evaluateJavascript
+            val o = try { JSONObject(unwrap(raw) ?: "") } catch (e: Exception) { null }
+            when (o?.optString("state")) {
+                "clicked" -> { afterNext = true; ui.postDelayed({ scan(my, 0) }, 1800) }
+                "submit" -> finish(my, "Semua halaman terisi. Tombol Kirim ada di depanmu: periksa dulu, lalu tekan sendiri.", OK)
+                "ambiguous" -> finish(my, "Terisi. Ada tombol Lanjut dan Kirim sekaligus, jadi tidak ditekan otomatis. Lanjut manual.", OK)
+                else -> finish(my, "Terisi, tapi tombol Lanjut tidak ditemukan. Lanjut manual.", OK)
+            }
+        }
+    }
+
     private fun verify(p: Plan, raw: String?): Boolean = try {
         val o = JSONObject(raw ?: "")
         if (p.kind == "text") o.optString("text") == p.text
@@ -337,6 +393,40 @@ class MainActivity : Activity() {
             (0 until ch.length()).map { ch.getInt(it) }.toSet().containsAll(p.choices)
         }
     } catch (e: Exception) { false }
+
+    // ---------- robot melayang di luar aplikasi ----------
+    private fun bubbleCmd(show: Boolean) {
+        val svc = Intent(this, BubbleService::class.java)
+        if (!store.floating || !Settings.canDrawOverlays(this)) { stopService(svc); return }
+        startForegroundService(svc.setAction(if (show) BubbleService.SHOW else BubbleService.HIDE))
+    }
+    override fun onResume() { super.onResume(); bubbleCmd(false) }
+    override fun onPause() { super.onPause(); bubbleCmd(true) }
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        pendingBubble = intent.getBooleanExtra("from_bubble", false)
+        intent.removeExtra("from_bubble")
+    }
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (hasFocus && pendingBubble) { pendingBubble = false; useClipboardLink() }
+    }
+    // Clipboard hanya dibaca saat pengguna mengetuk robot, dan hanya diambil URL-nya.
+    private fun useClipboardLink() {
+        val cm = getSystemService(CLIPBOARD_SERVICE) as ClipboardManager
+        val t = cm.primaryClip?.takeIf { it.itemCount > 0 }?.getItemAt(0)?.coerceToText(this)?.toString().orEmpty()
+        val m = Regex("https?://\\S+").find(t)
+        if (m == null) { toast("Salin link form dulu, lalu ketuk robot lagi."); return }
+        urlBox.setText(m.value)
+        go()
+    }
+    private fun enableFloating() {
+        if (!Settings.canDrawOverlays(this)) {
+            toast("Aktifkan izin 'Tampil di atas aplikasi lain' untuk FRANZZ Orbit, lalu kembali.")
+            startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName")))
+        }
+    }
 
     // ---------- pengaturan ----------
     private fun showSettings() {
@@ -352,7 +442,9 @@ class MainActivity : Activity() {
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE
         }
         val prevCb = CheckBox(this).apply { text = "Tampilkan jawaban dulu sebelum mengisi"; isChecked = store.preview }
-        listOf(keyEt, modelEt, profEt, prevCb).forEach { box.addView(it, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT)) }
+        val floatCb = CheckBox(this).apply { text = "Robot melayang di luar aplikasi (ketuk robot = buka link yang disalin)"; isChecked = store.floating }
+        val nextCb = CheckBox(this).apply { text = "Lanjut otomatis ke halaman berikutnya setelah semua terisi (tidak pernah menekan Kirim)"; isChecked = store.autoNext }
+        listOf(keyEt, modelEt, profEt, prevCb, nextCb, floatCb).forEach { box.addView(it, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT)) }
 
         fun save() {
             val k = keyEt.text.toString().trim()
@@ -360,6 +452,9 @@ class MainActivity : Activity() {
             store.model = modelEt.text.toString()
             store.profile = profEt.text.toString()
             store.preview = prevCb.isChecked
+            store.floating = floatCb.isChecked
+            store.autoNext = nextCb.isChecked
+            if (floatCb.isChecked) { enableFloating(); bubbleCmd(false) } else stopService(Intent(this, BubbleService::class.java))
         }
         AlertDialog.Builder(this).setTitle("Pengaturan").setView(ScrollView(this).apply { addView(box) })
             .setPositiveButton("Simpan") { _, _ -> save() }

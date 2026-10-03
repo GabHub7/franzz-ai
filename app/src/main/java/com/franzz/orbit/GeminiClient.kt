@@ -24,6 +24,7 @@ object GeminiClient {
         401, 403 -> "API key ditolak ($code)."
         404 -> "Model tidak ditemukan (404). Ubah nama model di Pengaturan."
         429 -> "Kuota habis atau terlalu cepat (429). Coba lagi nanti."
+        503 -> "Server Gemini sedang sibuk (503). Coba lagi sebentar."
         else -> "Error dari server Gemini ($code)."
     }
 
@@ -40,16 +41,27 @@ object GeminiClient {
         val body = JSONObject()
             .put("contents", JSONArray().put(JSONObject().put("parts", JSONArray().put(JSONObject().put("text", prompt(profile, questions))))))
             .put("generationConfig", JSONObject().put("responseMimeType", "application/json").put("temperature", 0.3))
-        val c = open("$BASE$model:generateContent", key, "POST")
-        c.doOutput = true
-        c.outputStream.use { it.write(body.toString().toByteArray()) }
-        val code = c.responseCode
-        if (code != 200) { c.disconnect(); error(describe(code)) }
-        val raw = c.inputStream.bufferedReader().use { it.readText() }
-        c.disconnect()
-        val text = JSONObject(raw).getJSONArray("candidates").getJSONObject(0)
-            .getJSONObject("content").getJSONArray("parts").getJSONObject(0).getString("text")
-        JSONObject(text.trim().removePrefix("```json").removeSuffix("```").trim()).getJSONArray("answers")
+            .toString().toByteArray()
+        var last = "Gagal memanggil Gemini."
+        for (attempt in 0..2) {
+            val c = open("$BASE$model:generateContent", key, "POST")
+            c.doOutput = true
+            c.outputStream.use { it.write(body) }
+            val code = c.responseCode
+            if (code == 200) {
+                val raw = c.inputStream.bufferedReader().use { it.readText() }
+                c.disconnect()
+                val text = JSONObject(raw).getJSONArray("candidates").getJSONObject(0)
+                    .getJSONObject("content").getJSONArray("parts").getJSONObject(0).getString("text")
+                return@runCatching JSONObject(text.trim().removePrefix("```json").removeSuffix("```").trim()).getJSONArray("answers")
+            }
+            c.disconnect()
+            last = describe(code)
+            // Error sementara: coba lagi. Error lain (key/model salah) langsung berhenti.
+            if (code !in listOf(429, 500, 502, 503, 504) || attempt == 2) error(last)
+            Thread.sleep(3000L * (attempt + 1))
+        }
+        error(last)
     }
 
     private fun prompt(profile: String, qs: JSONArray) = """

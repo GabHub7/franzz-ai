@@ -138,5 +138,26 @@
     return JSON.stringify({ choices: got, text: '' });
   }
 
-  window.__orbit = { v: 1, scan: scan, fill: fill, check: check };
+  // Satu-satunya tempat yang mengklik tombol: hanya tombol "Lanjut/Berikutnya" (whitelist eksak).
+  // Tombol Kirim/Selesai/Konfirmasi (dan apa pun yang tidak ada di whitelist) TIDAK PERNAH diklik.
+  function next() {
+    var NEXT = /^(next|berikutnya|selanjutnya|lanjut|lanjutkan|continue)$/i;
+    var SUB = /(submit|send|kirim|selesai|finish|done|konfirmasi|confirm|complete|simpan|save)/i;
+    var btns = Array.prototype.slice.call(
+      document.querySelectorAll('button,[role=button],input[type=button],input[type=submit]')).filter(vis);
+    var nextBtn = null, sub = false;
+    btns.forEach(function (b) {
+      var t = (b.tagName === 'INPUT' ? b.value : txt(b)).trim();
+      var a = (b.getAttribute('aria-label') || '').trim();
+      if (SUB.test(t) || SUB.test(a)) { sub = true; }
+      else if (NEXT.test(t) || NEXT.test(a)) {
+        if (!b.disabled && b.getAttribute('aria-disabled') !== 'true') nextBtn = nextBtn || b;
+      }
+    });
+    if (nextBtn && sub) return JSON.stringify({ state: 'ambiguous' });
+    if (nextBtn) { nextBtn.click(); return JSON.stringify({ state: 'clicked' }); }
+    return JSON.stringify({ state: sub ? 'submit' : 'none' });
+  }
+
+  window.__orbit = { v: 1, scan: scan, fill: fill, check: check, next: next };
 })();
