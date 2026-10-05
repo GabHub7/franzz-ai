@@ -52,6 +52,10 @@ class MainActivity : Activity() {
     private lateinit var stage: FrameLayout
     private lateinit var bubble: FrameLayout
     private lateinit var dot: View
+    private lateinit var sprite: RobotSprite
+    private lateinit var floatSw: Switch
+    private var pendingSetup = false
+    private var a11yAsked = false
     private lateinit var panel: LinearLayout
     private lateinit var statusTv: TextView
     private lateinit var opLabel: TextView
@@ -111,6 +115,8 @@ class MainActivity : Activity() {
         bar.addView(autoBtn, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { leftMargin = dp(6) })
         bar.addView(setBtn, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { leftMargin = dp(6) })
         root.addView(bar, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
+        floatSw = Switch(this).apply { text = "Robot melayang di semua aplikasi"; setTextColor(INK); setPadding(dp(12), 0, dp(12), dp(6)) }
+        root.addView(floatSw, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
 
         // WebView
         stage = FrameLayout(this)
@@ -157,11 +163,13 @@ class MainActivity : Activity() {
         // Robot bubble
         val size = dp(56)
         bubble = FrameLayout(this).apply { elevation = dp(6).toFloat(); contentDescription = "Asisten robot FRANZZ Orbit" }
-        val icon = ImageView(this).apply {
-            setImageResource(R.drawable.ic_robot); setPadding(dp(10), dp(10), dp(10), dp(10))
+        val ring = View(this).apply {
             background = GradientDrawable(GradientDrawable.Orientation.TL_BR, intArrayOf(PURPLE, BLUE)).apply { shape = GradientDrawable.OVAL; setStroke(dp(2), INK) }
         }
+        val icon = ImageView(this).apply { scaleType = ImageView.ScaleType.FIT_CENTER; setPadding(dp(2), dp(2), dp(2), dp(2)) }
+        sprite = RobotSprite(icon)
         dot = View(this).apply { background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(GREY); setStroke(dp(2), Color.WHITE) } }
+        bubble.addView(ring, FrameLayout.LayoutParams(size, size))
         bubble.addView(icon, FrameLayout.LayoutParams(size, size))
         bubble.addView(dot, FrameLayout.LayoutParams(dp(14), dp(14), Gravity.TOP or Gravity.END))
         stage.addView(bubble, FrameLayout.LayoutParams(size, size))
@@ -174,9 +182,13 @@ class MainActivity : Activity() {
                 MotionEvent.ACTION_MOVE -> {
                     val dx = e.rawX - sx; val dy = e.rawY - sy
                     if (!drag && Math.hypot(dx.toDouble(), dy.toDouble()) > slop) drag = true
-                    if (drag) moveBubble(ox + dx, oy + dy)
+                    if (drag) {
+                        moveBubble(ox + dx, oy + dy)
+                        sprite.look(2 + Math.round((dx / dp(40)).coerceIn(-1f, 1f) * 2))
+                    }
                 }
                 MotionEvent.ACTION_UP -> {
+                    sprite.look(2)
                     if (drag) { store.bx = v.x; store.by = v.y } else togglePanel()
                 }
             }
@@ -400,8 +412,13 @@ class MainActivity : Activity() {
         if (!store.floating || !Settings.canDrawOverlays(this)) { stopService(svc); return }
         startForegroundService(svc.setAction(if (show) BubbleService.SHOW else BubbleService.HIDE))
     }
-    override fun onResume() { super.onResume(); bubbleCmd(false) }
-    override fun onPause() { super.onPause(); bubbleCmd(true) }
+    override fun onResume() {
+        super.onResume()
+        setSwitch(store.floating)
+        if (pendingSetup) { pendingSetup = false; setupFloating() }
+        bubbleCmd(false); sprite.start()
+    }
+    override fun onPause() { super.onPause(); bubbleCmd(true); sprite.stop() }
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
@@ -421,6 +438,67 @@ class MainActivity : Activity() {
         urlBox.setText(m.value)
         go()
     }
+    private fun setSwitch(v: Boolean) {
+        floatSw.setOnCheckedChangeListener(null)
+        floatSw.isChecked = v
+        floatSw.setOnCheckedChangeListener { _, on -> onFloatToggle(on) }
+    }
+
+    private fun a11yEnabled(): Boolean {
+        val s = Settings.Secure.getString(contentResolver, Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES) ?: return false
+        return s.split(':').any { it.startsWith("$packageName/") }
+    }
+
+    private fun onFloatToggle(on: Boolean) {
+        if (!on) {
+            store.floating = false
+            stopService(Intent(this, BubbleService::class.java))
+            toast("Robot melayang dimatikan.")
+            return
+        }
+        AlertDialog.Builder(this).setTitle("Aktifkan robot melayang")
+            .setMessage("Robot akan melayang di atas semua aplikasi, termasuk layar utama dan browser.\n\n" +
+                "Hanya saat kamu mengetuk Scan & Fill, FRANZZ Orbit membaca teks soal dan pilihan di layar lewat layanan Aksesibilitas, " +
+                "mengirim HANYA soal dan pilihan ke Gemini, lalu mengisi jawabannya.\n\n" +
+                "Layar yang berisi kolom password tidak dibaca. Tidak berjalan sendiri. Tidak pernah menekan Kirim.\n\n" +
+                "Android akan meminta dua izin: tampil di atas aplikasi lain, dan layanan Aksesibilitas.")
+            .setPositiveButton("Lanjut") { _, _ -> store.floating = true; a11yAsked = false; setupFloating() }
+            .setNegativeButton("Batal") { _, _ -> setSwitch(false) }
+            .setOnCancelListener { setSwitch(false) }
+            .show()
+    }
+
+    private fun setupFloating() {
+        if (!store.floating) return
+        if (!Settings.canDrawOverlays(this)) {
+            pendingSetup = true
+            toast("Izinkan 'Tampil di atas aplikasi lain' untuk FRANZZ Orbit, lalu kembali.")
+            startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName")))
+            return
+        }
+        if (!a11yEnabled() && !a11yAsked) {
+            a11yAsked = true
+            AlertDialog.Builder(this).setTitle("Nyalakan layanan Aksesibilitas")
+                .setMessage("1. Ketuk 'Buka Aksesibilitas', cari FRANZZ Orbit (kadang di 'Aplikasi terunduh'), lalu nyalakan.\n\n" +
+                    "2. Kalau Android menolak dengan pesan 'pengaturan terbatas': buka 'Info aplikasi', ketuk menu ⋮ di pojok kanan atas, " +
+                    "pilih 'Izinkan pengaturan terbatas', lalu ulangi langkah 1.")
+                .setPositiveButton("Buka Aksesibilitas") { _, _ ->
+                    pendingSetup = true
+                    startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+                }
+                .setNeutralButton("Info aplikasi") { _, _ ->
+                    pendingSetup = true
+                    startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$packageName")))
+                }
+                .setNegativeButton("Nanti") { _, _ -> setupFloating() }
+                .show()
+            return
+        }
+        if (!a11yEnabled()) toast("Layanan Aksesibilitas belum aktif. Robot tetap melayang, tapi Scan & Fill di luar aplikasi belum bisa.")
+        else toast("Robot aktif. Buka halaman survei di browser mana saja, lalu ketuk robot.")
+        moveTaskToBack(true)
+    }
+
     private fun enableFloating() {
         if (!Settings.canDrawOverlays(this)) {
             toast("Aktifkan izin 'Tampil di atas aplikasi lain' untuk FRANZZ Orbit, lalu kembali.")
@@ -442,9 +520,8 @@ class MainActivity : Activity() {
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE
         }
         val prevCb = CheckBox(this).apply { text = "Tampilkan jawaban dulu sebelum mengisi"; isChecked = store.preview }
-        val floatCb = CheckBox(this).apply { text = "Robot melayang di luar aplikasi (ketuk robot = buka link yang disalin)"; isChecked = store.floating }
         val nextCb = CheckBox(this).apply { text = "Lanjut otomatis ke halaman berikutnya setelah semua terisi (tidak pernah menekan Kirim)"; isChecked = store.autoNext }
-        listOf(keyEt, modelEt, profEt, prevCb, nextCb, floatCb).forEach { box.addView(it, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT)) }
+        listOf(keyEt, modelEt, profEt, prevCb, nextCb).forEach { box.addView(it, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT)) }
 
         fun save() {
             val k = keyEt.text.toString().trim()
@@ -452,9 +529,7 @@ class MainActivity : Activity() {
             store.model = modelEt.text.toString()
             store.profile = profEt.text.toString()
             store.preview = prevCb.isChecked
-            store.floating = floatCb.isChecked
             store.autoNext = nextCb.isChecked
-            if (floatCb.isChecked) { enableFloating(); bubbleCmd(false) } else stopService(Intent(this, BubbleService::class.java))
         }
         AlertDialog.Builder(this).setTitle("Pengaturan").setView(ScrollView(this).apply { addView(box) })
             .setPositiveButton("Simpan") { _, _ -> save() }
@@ -475,5 +550,5 @@ class MainActivity : Activity() {
     @Suppress("OVERRIDE_DEPRECATION")
     override fun onBackPressed() { if (web.canGoBack()) web.goBack() else super.onBackPressed() }
 
-    override fun onDestroy() { io.shutdownNow(); web.destroy(); super.onDestroy() }
+    override fun onDestroy() { sprite.stop(); io.shutdownNow(); web.destroy(); super.onDestroy() }
 }

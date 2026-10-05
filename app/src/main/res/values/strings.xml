@@ -1,1 +1,4 @@
-<resources><string name="app_name">FRANZZ Orbit</string></resources>
+<resources>
+    <string name="app_name">FRANZZ Orbit</string>
+    <string name="a11y_description">FRANZZ Orbit membaca teks soal dan pilihan di layar hanya saat kamu mengetuk Scan &amp; Fill, lalu mengisi jawabannya. Tidak pernah menekan tombol Kirim, dan tidak membaca layar yang berisi kolom password.</string>
+</resources>
