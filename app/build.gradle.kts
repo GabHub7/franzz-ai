@@ -17,3 +17,10 @@ android {
     kotlinOptions { jvmTarget = "17" }
 }
 dependencies { implementation("androidx.core:core-ktx:1.15.0") }
+
+// Upload lewat web GitHub hanya menambah/menimpa berkas, tidak menghapus. Berkas XML lama ini
+// bentrok dengan resource baru (ic_launcher_fg) dan membuat build gagal "duplicate resources".
+val cleanStaleRes = tasks.register<Delete>("cleanStaleRes") {
+    delete(file("src/main/res/drawable/ic_launcher_fg.xml"))
+}
+tasks.matching { it.name == "preBuild" }.configureEach { dependsOn(cleanStaleRes) }
