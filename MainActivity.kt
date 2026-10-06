@@ -1,0 +1,584 @@
+package com.franzz.orbit
+
+import android.annotation.SuppressLint
+import android.content.ClipboardManager
+import android.content.Intent
+import android.net.Uri
+import android.os.Build
+import android.provider.Settings
+import android.app.Activity
+import android.app.AlertDialog
+import android.graphics.Color
+import android.graphics.Typeface
+import android.graphics.drawable.GradientDrawable
+import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
+import android.text.InputType
+import android.view.Gravity
+import android.view.MotionEvent
+import android.view.View
+import android.view.ViewConfiguration
+import android.view.ViewGroup.LayoutParams.MATCH_PARENT
+import android.view.ViewGroup.LayoutParams.WRAP_CONTENT
+import android.view.inputmethod.EditorInfo
+import android.view.inputmethod.InputMethodManager
+import android.webkit.WebResourceRequest
+import android.webkit.WebView
+import android.webkit.WebViewClient
+import android.widget.*
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
+import org.json.JSONArray
+import org.json.JSONObject
+import org.json.JSONTokener
+import java.util.concurrent.Executors
+
+class MainActivity : Activity() {
+    private val PURPLE = 0xFF7B3FE4.toInt()
+    private val BLUE = 0xFF2F6BFF.toInt()
+    private val INK = 0xFF1B1640.toInt()
+    private val GREY = 0xFF9AA0B4.toInt()
+    private val BUSY = 0xFFE0A100.toInt()
+    private val OK = 0xFF1F9D63.toInt()
+    private val ERR = 0xFFD9480F.toInt()
+
+    private class Plan(val id: String, val kind: String, val choices: List<Int>, val text: String?, val title: String, val summary: String)
+
+    private lateinit var store: SecureStore
+    private lateinit var scannerJs: String
+    private lateinit var web: WebView
+    private lateinit var urlBox: EditText
+    private lateinit var stage: FrameLayout
+    private lateinit var bubble: FrameLayout
+    private lateinit var dot: View
+    private lateinit var sprite: RobotSprite
+    private lateinit var floatSw: Switch
+    private var pendingSetup = false
+    private var a11yAsked = false
+    private lateinit var panel: LinearLayout
+    private lateinit var statusTv: TextView
+    private lateinit var opLabel: TextView
+    private lateinit var goBtn: Button
+    private lateinit var stopBtn: Button
+    private val panelBg = GradientDrawable()
+    private val fadeViews = mutableListOf<View>()
+    private val ui = Handler(Looper.getMainLooper())
+    private val io = Executors.newSingleThreadExecutor()
+    private var running = false
+    private var stopped = false
+    private var runId = 0
+    private var pendingAuto = false
+    private var pendingBubble = false
+    private var curOp = 100
+    private var canAdvance = false
+    private var pages = 0
+    private var afterNext = false
+    private var lastSig = ""
+
+    private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
+    private fun toast(m: String) = Toast.makeText(this, m, Toast.LENGTH_LONG).show()
+    private fun grad(r: Float) = GradientDrawable(GradientDrawable.Orientation.TL_BR, intArrayOf(PURPLE, BLUE)).apply { cornerRadius = r }
+
+    private fun btn(label: String, bg: Int? = null) = Button(this).apply {
+        text = label; isAllCaps = false; setTextColor(Color.WHITE); minHeight = 0; minimumHeight = 0
+        background = if (bg == null) grad(dp(10).toFloat()) else GradientDrawable().apply { cornerRadius = dp(10).toFloat(); setColor(bg) }
+        setPadding(dp(14), dp(8), dp(14), dp(8))
+    }
+
+    @SuppressLint("SetJavaScriptEnabled", "ClickableViewAccessibility")
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        store = SecureStore(this)
+        pendingBubble = intent.getBooleanExtra("from_bubble", false)
+        intent.removeExtra("from_bubble")
+        scannerJs = assets.open("scanner.js").bufferedReader().use { it.readText() }
+
+        val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setBackgroundColor(Color.WHITE) }
+        ViewCompat.setOnApplyWindowInsetsListener(root) { v, ins ->
+            val b = ins.getInsets(WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.ime())
+            v.setPadding(b.left, b.top, b.right, b.bottom)
+            WindowInsetsCompat.CONSUMED
+        }
+
+        // Bar link
+        val bar = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL; setPadding(dp(8), dp(8), dp(8), dp(8)) }
+        urlBox = EditText(this).apply {
+            hint = "Tempel link form di sini"; setSingleLine()
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI
+            imeOptions = EditorInfo.IME_ACTION_GO
+            setOnEditorActionListener { _, _, _ -> go(); true }
+        }
+        val autoBtn = btn("Isi otomatis").apply { setOnClickListener { go() } }
+        val setBtn = btn("⚙", INK).apply { setOnClickListener { showSettings() } }
+        bar.addView(urlBox, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
+        bar.addView(autoBtn, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { leftMargin = dp(6) })
+        bar.addView(setBtn, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { leftMargin = dp(6) })
+        root.addView(bar, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
+        floatSw = Switch(this).apply { text = "Robot melayang di semua aplikasi"; setTextColor(INK); setPadding(dp(12), 0, dp(12), dp(6)) }
+        root.addView(floatSw, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
+
+        // WebView
+        stage = FrameLayout(this)
+        web = WebView(this)
+        web.settings.apply {
+            javaScriptEnabled = true; domStorageEnabled = true
+            allowFileAccess = false; allowContentAccess = false
+            setSupportMultipleWindows(false)
+        }
+        web.webViewClient = object : WebViewClient() {
+            override fun shouldOverrideUrlLoading(v: WebView, r: WebResourceRequest): Boolean {
+                val s = r.url.scheme; return s != "http" && s != "https"
+            }
+            override fun onPageFinished(v: WebView, url: String) {
+                if (pendingAuto) { pendingAuto = false; ui.postDelayed({ startRun() }, 800) }
+            }
+        }
+        stage.addView(web, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
+
+        // Panel
+        panel = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; visibility = View.GONE; elevation = dp(8).toFloat(); setPadding(dp(12), dp(12), dp(12), dp(12)) }
+        panelBg.cornerRadius = dp(16).toFloat(); panelBg.setStroke(dp(2), INK); panel.background = panelBg
+        statusTv = TextView(this).apply { text = "Siap"; setTextColor(INK); typeface = Typeface.DEFAULT_BOLD; setPadding(0, 0, 0, dp(8)) }
+        goBtn = btn("Scan & Fill").apply { setOnClickListener { startRun() } }
+        stopBtn = btn("STOP", ERR).apply { visibility = View.GONE; setOnClickListener { stopped = true; finish(runId, "Dihentikan.", ERR) } }
+        opLabel = TextView(this).apply { setTextColor(INK); setPadding(0, dp(10), 0, 0) }
+        val seek = SeekBar(this).apply { max = 100; progress = store.opacity }
+        seek.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(s: SeekBar?, p: Int, fromUser: Boolean) { applyOpacity(p) }
+            override fun onStartTrackingTouch(s: SeekBar?) {}
+            override fun onStopTrackingTouch(s: SeekBar?) { store.opacity = seek.progress }
+        })
+        // Baris slider punya latar putih solid supaya tetap terbaca walau panel transparan.
+        val opRow = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL; setPadding(dp(8), 0, dp(8), dp(4))
+            background = GradientDrawable().apply { cornerRadius = dp(10).toFloat(); setColor(Color.WHITE) }
+        }
+        opRow.addView(opLabel); opRow.addView(seek)
+        listOf(statusTv, goBtn, stopBtn, opRow).forEach { panel.addView(it, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT)) }
+        (opRow.layoutParams as LinearLayout.LayoutParams).topMargin = dp(8)
+        fadeViews.add(goBtn)
+        stage.addView(panel, FrameLayout.LayoutParams(dp(250), WRAP_CONTENT))
+
+        // Robot bubble
+        val size = dp(56)
+        bubble = FrameLayout(this).apply { elevation = dp(6).toFloat(); contentDescription = "Asisten robot FRANZZ Orbit" }
+        val ring = View(this).apply {
+            background = GradientDrawable(GradientDrawable.Orientation.TL_BR, intArrayOf(PURPLE, BLUE)).apply { shape = GradientDrawable.OVAL; setStroke(dp(2), INK) }
+        }
+        val icon = ImageView(this).apply { scaleType = ImageView.ScaleType.FIT_CENTER; setPadding(dp(2), dp(2), dp(2), dp(2)) }
+        sprite = RobotSprite(icon)
+        dot = View(this).apply { background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(GREY); setStroke(dp(2), Color.WHITE) } }
+        bubble.addView(ring, FrameLayout.LayoutParams(size, size))
+        bubble.addView(icon, FrameLayout.LayoutParams(size, size))
+        bubble.addView(dot, FrameLayout.LayoutParams(dp(14), dp(14), Gravity.TOP or Gravity.END))
+        stage.addView(bubble, FrameLayout.LayoutParams(size, size))
+
+        val slop = ViewConfiguration.get(this).scaledTouchSlop
+        var sx = 0f; var sy = 0f; var ox = 0f; var oy = 0f; var drag = false
+        bubble.setOnTouchListener { v, e ->
+            when (e.actionMasked) {
+                MotionEvent.ACTION_DOWN -> { sx = e.rawX; sy = e.rawY; ox = v.x; oy = v.y; drag = false }
+                MotionEvent.ACTION_MOVE -> {
+                    val dx = e.rawX - sx; val dy = e.rawY - sy
+                    if (!drag && Math.hypot(dx.toDouble(), dy.toDouble()) > slop) drag = true
+                    if (drag) {
+                        moveBubble(ox + dx, oy + dy)
+                        sprite.look(2 + Math.round((dx / dp(40)).coerceIn(-1f, 1f) * 2))
+                    }
+                }
+                MotionEvent.ACTION_UP -> {
+                    sprite.look(2)
+                    if (drag) { store.bx = v.x; store.by = v.y } else togglePanel()
+                }
+            }
+            true
+        }
+        root.addView(stage, LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f))
+        setContentView(root)
+
+        applyOpacity(store.opacity)
+        stage.post {
+            val x = if (store.bx < 0) (stage.width - size - dp(12)).toFloat() else store.bx
+            val y = if (store.by < 0) (stage.height - size - dp(24)).toFloat() else store.by
+            moveBubble(x, y)
+        }
+        if (!store.loggedIn()) showLogin()
+    }
+
+    // ---------- overlay ----------
+    // 0% = transparan penuh. Saat panel terbuka, robot tetap terlihat samar (30%) agar mudah ditemukan.
+    // Teks status dan tombol STOP minimal 60% supaya hasil dan tombol berhenti selalu terbaca.
+    private fun applyOpacity(p: Int) {
+        curOp = p
+        val a = p / 100f
+        bubble.alpha = if (panel.visibility == View.VISIBLE) maxOf(a, 0.3f) else a
+        fadeViews.forEach { it.alpha = a }
+        statusTv.alpha = maxOf(a, 0.6f)
+        stopBtn.alpha = maxOf(a, 0.6f)
+        panelBg.setColor(Color.argb((maxOf(a, 0.12f) * 255).toInt(), 255, 255, 255))
+        opLabel.text = "Opasitas $p%"
+    }
+    private fun moveBubble(x: Float, y: Float) {
+        val s = dp(56)
+        bubble.x = x.coerceIn(0f, maxOf(0f, (stage.width - s).toFloat()))
+        bubble.y = y.coerceIn(0f, maxOf(0f, (stage.height - s).toFloat()))
+        placePanel()
+    }
+    private fun togglePanel() {
+        panel.visibility = if (panel.visibility == View.VISIBLE) View.GONE else View.VISIBLE
+        applyOpacity(curOp)
+        placePanel()
+    }
+    private fun showPanel() { panel.visibility = View.VISIBLE; applyOpacity(curOp); placePanel() }
+    private fun placePanel() {
+        if (panel.visibility != View.VISIBLE) return
+        val w = dp(250); val s = dp(56)
+        panel.measure(View.MeasureSpec.makeMeasureSpec(w, View.MeasureSpec.EXACTLY), View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED))
+        val h = panel.measuredHeight
+        val minX = dp(8).toFloat(); val maxX = maxOf(minX, (stage.width - w - dp(8)).toFloat())
+        panel.x = (bubble.x + s - w).coerceIn(minX, maxX)
+        var y = bubble.y - h - dp(8)
+        if (y < dp(8)) y = bubble.y + s + dp(8)
+        panel.y = y
+    }
+    private fun setState(msg: String, color: Int) {
+        statusTv.text = msg
+        (dot.background as GradientDrawable).setColor(color)
+        placePanel()
+    }
+
+    // ---------- alur utama ----------
+    private fun go() {
+        var u = urlBox.text.toString().trim()
+        if (u.isEmpty()) { toast("Tempel link form dulu."); return }
+        if (!u.contains("://")) u = "https://$u"
+        val scheme = try { java.net.URI(u).scheme } catch (e: Exception) { null }
+        if (scheme != "http" && scheme != "https") { toast("Link tidak valid. Harus diawali http:// atau https://"); return }
+        (getSystemService(INPUT_METHOD_SERVICE) as InputMethodManager).hideSoftInputFromWindow(urlBox.windowToken, 0)
+        if (running) return
+        pendingAuto = true
+        setState("Membuka link…", BUSY); showPanel()
+        web.loadUrl(u)
+    }
+
+    private fun startRun() {
+        if (running) return
+        if (!store.loggedIn()) { setState("Masuk dulu.", ERR); showPanel(); showLogin(); return }
+        running = true; stopped = false
+        pages = 0; afterNext = false; lastSig = ""
+        val my = ++runId
+        goBtn.visibility = View.GONE; stopBtn.visibility = View.VISIBLE
+        showPanel()
+        scan(my, 0)
+    }
+
+    private fun finish(my: Int, msg: String, color: Int) {
+        if (my != runId) return
+        running = false
+        goBtn.visibility = View.VISIBLE; stopBtn.visibility = View.GONE
+        setState(msg, color); showPanel()
+    }
+
+    private fun unwrap(raw: String?): String? = try {
+        if (raw == null || raw == "null") null else JSONTokener(raw).nextValue() as? String
+    } catch (e: Exception) { null }
+
+    private fun scan(my: Int, attempt: Int) {
+        if (my != runId || stopped) return
+        setState("Memindai…", BUSY)
+        web.evaluateJavascript(scannerJs, null)
+        web.evaluateJavascript("__orbit.scan()") { raw ->
+            if (my != runId || stopped) return@evaluateJavascript
+            val obj = try { JSONObject(unwrap(raw) ?: "") } catch (e: Exception) { null }
+            val qs = obj?.optJSONArray("questions")
+            if (obj == null || qs == null) { finish(my, "Gagal memindai halaman.", ERR); return@evaluateJavascript }
+            if (qs.length() == 0) {
+                if (attempt < 3) ui.postDelayed({ scan(my, attempt + 1) }, 1200)
+                else finish(my, "Tidak ada soal yang didukung di halaman ini.", ERR)
+                return@evaluateJavascript
+            }
+            val sig = (0 until qs.length()).joinToString("|") { qs.getJSONObject(it).getString("title") }
+            if (afterNext && sig == lastSig) {
+                afterNext = false
+                finish(my, "Halaman tidak berpindah. Mungkin ada soal wajib yang belum terisi. Periksa manual.", ERR)
+                return@evaluateJavascript
+            }
+            afterNext = false; lastSig = sig
+            val token = store.token()
+            if (token == null) { finish(my, "Belum masuk.", ERR); showLogin(); return@evaluateJavascript }
+            setState("Menganalisis ${qs.length()} soal…", BUSY)
+            val unsupported = obj.optInt("unsupported", 0)
+            val server = store.serverUrl; val profile = store.profile
+            io.execute {
+                val res = GeminiClient.answer(server, token, profile, qs)
+                ui.post { if (my == runId && !stopped) onAnswers(my, qs, unsupported, res) }
+            }
+        }
+    }
+
+    private fun onAnswers(my: Int, qs: JSONArray, unsupported: Int, res: Result<JSONArray>) {
+        val ans = res.getOrElse {
+            if (it is AuthException) { store.logout(); finish(my, it.message ?: "Sesi berakhir.", ERR); showLogin(); return }
+            finish(my, it.message ?: "Gagal memanggil Gemini.", ERR); return
+        }
+        setState("Memvalidasi…", BUSY)
+        val plans = buildPlans(qs, ans)
+        val skipped = qs.length() - plans.size + unsupported
+        val planIds = plans.map { it.id }.toSet()
+        canAdvance = (0 until qs.length()).map { qs.getJSONObject(it) }
+            .filter { it.optBoolean("required") }.all { it.getString("id") in planIds }
+        if (plans.isEmpty()) { finish(my, "Tidak ada jawaban yang cukup yakin. Isi manual.", ERR); return }
+        if (store.preview) {
+            AlertDialog.Builder(this).setTitle("Jawaban yang akan diisi")
+                .setMessage(plans.joinToString("\n\n") { "${it.title}\n→ ${it.summary}" })
+                .setPositiveButton("Isi") { _, _ -> fill(my, plans, 0, 0, 0, skipped) }
+                .setNegativeButton("Batal") { _, _ -> finish(my, "Dibatalkan.", ERR) }
+                .setOnCancelListener { finish(my, "Dibatalkan.", ERR) }.show()
+        } else fill(my, plans, 0, 0, 0, skipped)
+    }
+
+    private fun buildPlans(qs: JSONArray, ans: JSONArray): List<Plan> {
+        val byId = HashMap<String, JSONObject>()
+        for (i in 0 until ans.length()) ans.optJSONObject(i)?.let { byId[it.optString("id")] = it }
+        val out = ArrayList<Plan>()
+        for (i in 0 until qs.length()) {
+            val q = qs.getJSONObject(i); val id = q.getString("id")
+            val a = byId[id] ?: continue
+            if (a.optBoolean("skip", false)) continue
+            val type = q.getString("type"); val opts = q.getJSONArray("options"); val title = q.getString("title")
+            if (type == "text") {
+                if (a.isNull("text")) continue
+                val t = a.optString("text", "").trim()
+                if (t.isNotEmpty() && t.length <= 500) out.add(Plan(id, type, emptyList(), t, title, t))
+                continue
+            }
+            val ch = a.optJSONArray("choices") ?: continue
+            val idx = (0 until ch.length()).map { ch.optInt(it, -1) }.filter { it in 0 until opts.length() }.distinct()
+            if (idx.isEmpty()) continue
+            if ((type == "single" || type == "select") && idx.size != 1) continue
+            out.add(Plan(id, type, idx, null, title, idx.joinToString(", ") { opts.getString(it) }))
+        }
+        return out
+    }
+
+    private fun fill(my: Int, plans: List<Plan>, i: Int, ok: Int, bad: Int, skipped: Int) {
+        if (my != runId) return
+        if (stopped) { finish(my, "Dihentikan. $ok terisi sebelum berhenti.", ERR); return }
+        if (i >= plans.size) {
+            if (store.autoNext && canAdvance && bad == 0) { advance(my); return }
+            finish(my, "Selesai: $ok terisi, $bad gagal, $skipped dilewati. Periksa dulu, lalu tekan Lanjut/Kirim sendiri." +
+                (if (store.autoNext) " (Tidak lanjut otomatis: ada soal wajib atau isian yang gagal.)" else ""), OK)
+            return
+        }
+        setState("Mengisi ${i + 1}/${plans.size}…", BUSY)
+        val p = plans[i]
+        val arg = JSONObject().put("choices", JSONArray(p.choices)).put("text", p.text ?: JSONObject.NULL)
+        web.evaluateJavascript("__orbit.fill('${p.id}',$arg)", null)
+        ui.postDelayed({
+            web.evaluateJavascript("__orbit.check('${p.id}')") { raw ->
+                val good = verify(p, unwrap(raw))
+                ui.postDelayed({ fill(my, plans, i + 1, ok + (if (good) 1 else 0), bad + (if (good) 0 else 1), skipped) }, 60)
+            }
+        }, 150)
+    }
+
+    // Lanjut otomatis: hanya menekan "Lanjut/Berikutnya". Tidak pernah menekan Kirim.
+    private fun advance(my: Int) {
+        if (my != runId || stopped) return
+        if (++pages > 25) { finish(my, "Berhenti: batas 25 halaman tercapai. Periksa dulu.", ERR); return }
+        setState("Lanjut ke halaman berikutnya…", BUSY)
+        web.evaluateJavascript("__orbit.next()") { raw ->
+            if (my != runId || stopped) return@evaluateJavascript
+            val o = try { JSONObject(unwrap(raw) ?: "") } catch (e: Exception) { null }
+            when (o?.optString("state")) {
+                "clicked" -> { afterNext = true; ui.postDelayed({ scan(my, 0) }, 1800) }
+                "submit" -> finish(my, "Semua halaman terisi. Tombol Kirim ada di depanmu: periksa dulu, lalu tekan sendiri.", OK)
+                "ambiguous" -> finish(my, "Terisi. Ada tombol Lanjut dan Kirim sekaligus, jadi tidak ditekan otomatis. Lanjut manual.", OK)
+                else -> finish(my, "Terisi, tapi tombol Lanjut tidak ditemukan. Lanjut manual.", OK)
+            }
+        }
+    }
+
+    private fun verify(p: Plan, raw: String?): Boolean = try {
+        val o = JSONObject(raw ?: "")
+        if (p.kind == "text") o.optString("text") == p.text
+        else {
+            val ch = o.getJSONArray("choices")
+            (0 until ch.length()).map { ch.getInt(it) }.toSet().containsAll(p.choices)
+        }
+    } catch (e: Exception) { false }
+
+    // ---------- robot melayang di luar aplikasi ----------
+    private fun bubbleCmd(show: Boolean) {
+        val svc = Intent(this, BubbleService::class.java)
+        if (!store.floating || !Settings.canDrawOverlays(this)) { stopService(svc); return }
+        startForegroundService(svc.setAction(if (show) BubbleService.SHOW else BubbleService.HIDE))
+    }
+    override fun onResume() {
+        super.onResume()
+        setSwitch(store.floating)
+        if (!store.loggedIn()) showLogin()
+        if (pendingSetup) { pendingSetup = false; setupFloating() }
+        bubbleCmd(false); sprite.start()
+    }
+    override fun onPause() { super.onPause(); bubbleCmd(true); sprite.stop() }
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        pendingBubble = intent.getBooleanExtra("from_bubble", false)
+        intent.removeExtra("from_bubble")
+    }
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (hasFocus && pendingBubble) { pendingBubble = false; useClipboardLink() }
+    }
+    // Clipboard hanya dibaca saat pengguna mengetuk robot, dan hanya diambil URL-nya.
+    private fun useClipboardLink() {
+        val cm = getSystemService(CLIPBOARD_SERVICE) as ClipboardManager
+        val t = cm.primaryClip?.takeIf { it.itemCount > 0 }?.getItemAt(0)?.coerceToText(this)?.toString().orEmpty()
+        val m = Regex("https?://\\S+").find(t)
+        if (m == null) { toast("Salin link form dulu, lalu ketuk robot lagi."); return }
+        urlBox.setText(m.value)
+        go()
+    }
+    private fun setSwitch(v: Boolean) {
+        floatSw.setOnCheckedChangeListener(null)
+        floatSw.isChecked = v
+        floatSw.setOnCheckedChangeListener { _, on -> onFloatToggle(on) }
+    }
+
+    private fun a11yEnabled(): Boolean {
+        val s = Settings.Secure.getString(contentResolver, Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES) ?: return false
+        return s.split(':').any { it.startsWith("$packageName/") }
+    }
+
+    private fun onFloatToggle(on: Boolean) {
+        if (!on) {
+            store.floating = false
+            stopService(Intent(this, BubbleService::class.java))
+            toast("Robot melayang dimatikan.")
+            return
+        }
+        AlertDialog.Builder(this).setTitle("Aktifkan robot melayang")
+            .setMessage("Robot akan melayang di atas semua aplikasi, termasuk layar utama dan browser.\n\n" +
+                "Hanya saat kamu mengetuk Scan & Fill, FRANZZ Orbit membaca teks soal dan pilihan di layar lewat layanan Aksesibilitas, " +
+                "mengirim HANYA soal dan pilihan ke Gemini, lalu mengisi jawabannya.\n\n" +
+                "Layar yang berisi kolom password tidak dibaca. Tidak berjalan sendiri. Tidak pernah menekan Kirim.\n\n" +
+                "Android akan meminta dua izin: tampil di atas aplikasi lain, dan layanan Aksesibilitas.")
+            .setPositiveButton("Lanjut") { _, _ -> store.floating = true; a11yAsked = false; setupFloating() }
+            .setNegativeButton("Batal") { _, _ -> setSwitch(false) }
+            .setOnCancelListener { setSwitch(false) }
+            .show()
+    }
+
+    private fun setupFloating() {
+        if (!store.floating) return
+        if (!Settings.canDrawOverlays(this)) {
+            pendingSetup = true
+            toast("Izinkan 'Tampil di atas aplikasi lain' untuk FRANZZ Orbit, lalu kembali.")
+            startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName")))
+            return
+        }
+        if (!a11yEnabled() && !a11yAsked) {
+            a11yAsked = true
+            AlertDialog.Builder(this).setTitle("Nyalakan layanan Aksesibilitas")
+                .setMessage("1. Ketuk 'Buka Aksesibilitas', cari FRANZZ Orbit (kadang di 'Aplikasi terunduh'), lalu nyalakan.\n\n" +
+                    "2. Kalau Android menolak dengan pesan 'pengaturan terbatas': buka 'Info aplikasi', ketuk menu ⋮ di pojok kanan atas, " +
+                    "pilih 'Izinkan pengaturan terbatas', lalu ulangi langkah 1.")
+                .setPositiveButton("Buka Aksesibilitas") { _, _ ->
+                    pendingSetup = true
+                    startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+                }
+                .setNeutralButton("Info aplikasi") { _, _ ->
+                    pendingSetup = true
+                    startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$packageName")))
+                }
+                .setNegativeButton("Nanti") { _, _ -> setupFloating() }
+                .show()
+            return
+        }
+        if (!a11yEnabled()) toast("Layanan Aksesibilitas belum aktif. Robot tetap melayang, tapi Scan & Fill di luar aplikasi belum bisa.")
+        else toast("Robot aktif. Buka halaman survei di browser mana saja, lalu ketuk robot.")
+        moveTaskToBack(true)
+    }
+
+    private fun enableFloating() {
+        if (!Settings.canDrawOverlays(this)) {
+            toast("Aktifkan izin 'Tampil di atas aplikasi lain' untuk FRANZZ Orbit, lalu kembali.")
+            startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName")))
+        }
+    }
+
+    // ---------- login & pengaturan ----------
+    private var loginDialog: AlertDialog? = null
+
+    /** Akun dibuat oleh admin. API key Gemini dipegang admin di server, bukan di HP ini. */
+    private fun showLogin(msg: String? = null) {
+        if (loginDialog?.isShowing == true) return
+        val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(20), dp(8), dp(20), 0) }
+        val serverEt = EditText(this).apply {
+            hint = "Alamat server (https://…)"; setSingleLine(); setText(store.serverUrl)
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI
+        }
+        val userEt = EditText(this).apply { hint = "Username"; setSingleLine(); setText(store.username); inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD }
+        val passEt = EditText(this).apply { hint = "Password"; setSingleLine(); inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD }
+        val msgTv = TextView(this).apply { setTextColor(ERR); text = msg.orEmpty(); setPadding(0, dp(8), 0, 0) }
+        listOf(serverEt, userEt, passEt, msgTv).forEach { box.addView(it, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT)) }
+        val d = AlertDialog.Builder(this).setTitle("Masuk ke FRANZZ Orbit").setView(box).setCancelable(false)
+            .setPositiveButton("Masuk", null).create()
+        d.setOnShowListener {
+            d.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener { btn ->
+                val server = serverEt.text.toString(); val user = userEt.text.toString().trim(); val pass = passEt.text.toString()
+                if (server.isBlank() || user.isEmpty() || pass.isEmpty()) { msgTv.text = "Isi alamat server, username, dan password."; return@setOnClickListener }
+                btn.isEnabled = false; msgTv.setTextColor(INK); msgTv.text = "Masuk…"
+                io.execute {
+                    val r = GeminiClient.login(server, user, pass)
+                    runOnUiThread {
+                        r.fold({ j ->
+                            store.saveSession(server, j.optString("username", user), j.getString("token"))
+                            d.dismiss(); toast("Masuk sebagai ${store.username}.")
+                        }, { e ->
+                            btn.isEnabled = true; msgTv.setTextColor(ERR)
+                            msgTv.text = if (e is java.io.IOException) "Tidak bisa menghubungi server." else (e.message ?: "Gagal masuk.")
+                        })
+                    }
+                }
+            }
+        }
+        loginDialog = d
+        d.show()
+    }
+
+    private fun showSettings() {
+        val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(20), dp(8), dp(20), 0) }
+        val who = TextView(this).apply { text = if (store.loggedIn()) "Masuk sebagai ${store.username}" else "Belum masuk"; setTextColor(INK) }
+        val profEt = EditText(this).apply {
+            setText(store.profile); minLines = 3
+            hint = "Tentang saya (dikirim ke Gemini sebagai konteks jawaban)"
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE
+        }
+        val prevCb = CheckBox(this).apply { text = "Tampilkan jawaban dulu sebelum mengisi"; isChecked = store.preview }
+        val nextCb = CheckBox(this).apply { text = "Lanjut otomatis ke halaman berikutnya setelah semua terisi (tidak pernah menekan Kirim)"; isChecked = store.autoNext }
+        listOf(who, profEt, prevCb, nextCb).forEach { box.addView(it, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT)) }
+
+        fun save() {
+            store.profile = profEt.text.toString()
+            store.preview = prevCb.isChecked
+            store.autoNext = nextCb.isChecked
+        }
+        AlertDialog.Builder(this).setTitle("Pengaturan").setView(ScrollView(this).apply { addView(box) })
+            .setPositiveButton("Simpan") { _, _ -> save() }
+            .setNeutralButton("Keluar") { _, _ ->
+                save(); store.logout()
+                stopService(Intent(this, BubbleService::class.java)); store.floating = false; setSwitch(false)
+                showLogin()
+            }
+            .setNegativeButton("Batal", null).show()
+    }
+
+    @Suppress("OVERRIDE_DEPRECATION")
+    override fun onBackPressed() { if (web.canGoBack()) web.goBack() else super.onBackPressed() }
+
+    override fun onDestroy() { sprite.stop(); io.shutdownNow(); web.destroy(); super.onDestroy() }
+}
