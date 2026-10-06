@@ -131,7 +131,7 @@ class MainActivity : Activity() {
                 val s = r.url.scheme; return s != "http" && s != "https"
             }
             override fun onPageFinished(v: WebView, url: String) {
-                if (pendingAuto) { pendingAuto = false; ui.postDelayed({ startRun() }, 1200) }
+                if (pendingAuto) { pendingAuto = false; ui.postDelayed({ startRun() }, 800) }
             }
         }
         stage.addView(web, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
@@ -203,7 +203,7 @@ class MainActivity : Activity() {
             val y = if (store.by < 0) (stage.height - size - dp(24)).toFloat() else store.by
             moveBubble(x, y)
         }
-        if (!store.hasKey()) showSettings()
+        if (!store.loggedIn()) showLogin()
     }
 
     // ---------- overlay ----------
@@ -264,7 +264,7 @@ class MainActivity : Activity() {
 
     private fun startRun() {
         if (running) return
-        if (!store.hasKey()) { setState("Isi API key dulu.", ERR); showPanel(); showSettings(); return }
+        if (!store.loggedIn()) { setState("Masuk dulu.", ERR); showPanel(); showLogin(); return }
         running = true; stopped = false
         pages = 0; afterNext = false; lastSig = ""
         val my = ++runId
@@ -305,20 +305,23 @@ class MainActivity : Activity() {
                 return@evaluateJavascript
             }
             afterNext = false; lastSig = sig
-            val key = store.apiKey()
-            if (key == null) { finish(my, "API key tidak terbaca. Isi ulang di Pengaturan.", ERR); return@evaluateJavascript }
+            val token = store.token()
+            if (token == null) { finish(my, "Belum masuk.", ERR); showLogin(); return@evaluateJavascript }
             setState("Menganalisis ${qs.length()} soal…", BUSY)
             val unsupported = obj.optInt("unsupported", 0)
-            val model = store.model; val profile = store.profile
+            val server = store.serverUrl; val profile = store.profile
             io.execute {
-                val res = GeminiClient.answer(key, model, profile, qs)
+                val res = GeminiClient.answer(server, token, profile, qs)
                 ui.post { if (my == runId && !stopped) onAnswers(my, qs, unsupported, res) }
             }
         }
     }
 
     private fun onAnswers(my: Int, qs: JSONArray, unsupported: Int, res: Result<JSONArray>) {
-        val ans = res.getOrElse { finish(my, it.message ?: "Gagal memanggil Gemini.", ERR); return }
+        val ans = res.getOrElse {
+            if (it is AuthException) { store.logout(); finish(my, it.message ?: "Sesi berakhir.", ERR); showLogin(); return }
+            finish(my, it.message ?: "Gagal memanggil Gemini.", ERR); return
+        }
         setState("Memvalidasi…", BUSY)
         val plans = buildPlans(qs, ans)
         val skipped = qs.length() - plans.size + unsupported
@@ -375,9 +378,9 @@ class MainActivity : Activity() {
         ui.postDelayed({
             web.evaluateJavascript("__orbit.check('${p.id}')") { raw ->
                 val good = verify(p, unwrap(raw))
-                ui.postDelayed({ fill(my, plans, i + 1, ok + (if (good) 1 else 0), bad + (if (good) 0 else 1), skipped) }, 250)
+                ui.postDelayed({ fill(my, plans, i + 1, ok + (if (good) 1 else 0), bad + (if (good) 0 else 1), skipped) }, 60)
             }
-        }, 450)
+        }, 150)
     }
 
     // Lanjut otomatis: hanya menekan "Lanjut/Berikutnya". Tidak pernah menekan Kirim.
@@ -415,6 +418,7 @@ class MainActivity : Activity() {
     override fun onResume() {
         super.onResume()
         setSwitch(store.floating)
+        if (!store.loggedIn()) showLogin()
         if (pendingSetup) { pendingSetup = false; setupFloating() }
         bubbleCmd(false); sprite.start()
     }
@@ -506,14 +510,49 @@ class MainActivity : Activity() {
         }
     }
 
-    // ---------- pengaturan ----------
+    // ---------- login & pengaturan ----------
+    private var loginDialog: AlertDialog? = null
+
+    /** Akun dibuat oleh admin. API key Gemini dipegang admin di server, bukan di HP ini. */
+    private fun showLogin(msg: String? = null) {
+        if (loginDialog?.isShowing == true) return
+        val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(20), dp(8), dp(20), 0) }
+        val serverEt = EditText(this).apply {
+            hint = "Alamat server (https://…)"; setSingleLine(); setText(store.serverUrl)
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI
+        }
+        val userEt = EditText(this).apply { hint = "Username"; setSingleLine(); setText(store.username); inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD }
+        val passEt = EditText(this).apply { hint = "Password"; setSingleLine(); inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD }
+        val msgTv = TextView(this).apply { setTextColor(ERR); text = msg.orEmpty(); setPadding(0, dp(8), 0, 0) }
+        listOf(serverEt, userEt, passEt, msgTv).forEach { box.addView(it, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT)) }
+        val d = AlertDialog.Builder(this).setTitle("Masuk ke FRANZZ Orbit").setView(box).setCancelable(false)
+            .setPositiveButton("Masuk", null).create()
+        d.setOnShowListener {
+            d.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener { btn ->
+                val server = serverEt.text.toString(); val user = userEt.text.toString().trim(); val pass = passEt.text.toString()
+                if (server.isBlank() || user.isEmpty() || pass.isEmpty()) { msgTv.text = "Isi alamat server, username, dan password."; return@setOnClickListener }
+                btn.isEnabled = false; msgTv.setTextColor(INK); msgTv.text = "Masuk…"
+                io.execute {
+                    val r = GeminiClient.login(server, user, pass)
+                    runOnUiThread {
+                        r.fold({ j ->
+                            store.saveSession(server, j.optString("username", user), j.getString("token"))
+                            d.dismiss(); toast("Masuk sebagai ${store.username}.")
+                        }, { e ->
+                            btn.isEnabled = true; msgTv.setTextColor(ERR)
+                            msgTv.text = if (e is java.io.IOException) "Tidak bisa menghubungi server." else (e.message ?: "Gagal masuk.")
+                        })
+                    }
+                }
+            }
+        }
+        loginDialog = d
+        d.show()
+    }
+
     private fun showSettings() {
         val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(20), dp(8), dp(20), 0) }
-        val keyEt = EditText(this).apply {
-            hint = if (store.hasKey()) "API key tersimpan. Kosongkan untuk tetap." else "API key Gemini"
-            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD; setSingleLine()
-        }
-        val modelEt = EditText(this).apply { setText(store.model); hint = "Nama model Gemini"; setSingleLine() }
+        val who = TextView(this).apply { text = if (store.loggedIn()) "Masuk sebagai ${store.username}" else "Belum masuk"; setTextColor(INK) }
         val profEt = EditText(this).apply {
             setText(store.profile); minLines = 3
             hint = "Tentang saya (dikirim ke Gemini sebagai konteks jawaban)"
@@ -521,30 +560,21 @@ class MainActivity : Activity() {
         }
         val prevCb = CheckBox(this).apply { text = "Tampilkan jawaban dulu sebelum mengisi"; isChecked = store.preview }
         val nextCb = CheckBox(this).apply { text = "Lanjut otomatis ke halaman berikutnya setelah semua terisi (tidak pernah menekan Kirim)"; isChecked = store.autoNext }
-        listOf(keyEt, modelEt, profEt, prevCb, nextCb).forEach { box.addView(it, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT)) }
+        listOf(who, profEt, prevCb, nextCb).forEach { box.addView(it, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT)) }
 
         fun save() {
-            val k = keyEt.text.toString().trim()
-            if (k.isNotEmpty()) store.saveApiKey(k)
-            store.model = modelEt.text.toString()
             store.profile = profEt.text.toString()
             store.preview = prevCb.isChecked
             store.autoNext = nextCb.isChecked
         }
         AlertDialog.Builder(this).setTitle("Pengaturan").setView(ScrollView(this).apply { addView(box) })
             .setPositiveButton("Simpan") { _, _ -> save() }
-            .setNeutralButton("Simpan & tes") { _, _ -> save(); testConnection() }
+            .setNeutralButton("Keluar") { _, _ ->
+                save(); store.logout()
+                stopService(Intent(this, BubbleService::class.java)); store.floating = false; setSwitch(false)
+                showLogin()
+            }
             .setNegativeButton("Batal", null).show()
-    }
-
-    private fun testConnection() {
-        val key = store.apiKey() ?: run { toast("Isi API key dulu."); return }
-        val model = store.model
-        toast("Menguji koneksi…")
-        io.execute {
-            val r = GeminiClient.test(key, model)
-            runOnUiThread { toast(r.fold({ "Koneksi OK. Model: $model" }, { it.message ?: "Gagal terhubung." })) }
-        }
     }
 
     @Suppress("OVERRIDE_DEPRECATION")

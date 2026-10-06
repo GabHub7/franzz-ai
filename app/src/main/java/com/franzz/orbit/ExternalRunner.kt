@@ -41,7 +41,7 @@ class ExternalRunner(
         if (FillAccessibilityService.instance == null) {
             onStatus("Layanan Aksesibilitas belum aktif. Buka FRANZZ Orbit lalu nyalakan Robot melayang.", ERR); return
         }
-        if (!store.hasKey()) { onStatus("Isi API key dulu di FRANZZ Orbit (⚙).", ERR); return }
+        if (!store.loggedIn()) { onStatus("Belum masuk. Buka FRANZZ Orbit lalu login dulu.", ERR); return }
         running = true; token++
         handled.clear(); filled = 0; failed = 0; skipped = 0; passes = 0; idle = 0
         onRunning(true)
@@ -83,25 +83,28 @@ class ExternalRunner(
             return
         }
         idle = 0
-        val key = store.apiKey()
-        if (key == null) { end(my, "API key tidak terbaca. Isi ulang di FRANZZ Orbit.", ERR); return }
+        val token = store.token()
+        if (token == null) { end(my, "Belum masuk. Buka FRANZZ Orbit lalu login dulu.", ERR); return }
         onStatus("Menganalisis ${fresh.size} soal…", BUSY)
         val arr = JSONArray()
         fresh.forEach { q ->
             arr.put(JSONObject().put("id", q.id).put("title", q.title).put("type", q.type)
                 .put("options", JSONArray(q.options)).put("required", false))
         }
-        val model = store.model
+        val server = store.serverUrl
         val profile = store.profile
         io.execute {
-            val res = GeminiClient.answer(key, model, profile, arr)
+            val res = GeminiClient.answer(server, token, profile, arr)
             h.post { onAnswers(my, fresh, res) }
         }
     }
 
     private fun onAnswers(my: Int, fresh: List<XQuestion>, res: Result<JSONArray>) {
         if (my != token) return
-        val ans = res.getOrElse { end(my, it.message ?: "Gagal memanggil Gemini.", ERR); return }
+        val ans = res.getOrElse {
+            if (it is AuthException) store.logout()
+            end(my, it.message ?: "Gagal memanggil Gemini.", ERR); return
+        }
         val plans = buildPlans(fresh, ans)
         fresh.forEach { handled.add(it.sig) }
         skipped += fresh.size - plans.size
@@ -128,7 +131,7 @@ class ExternalRunner(
                 if (good) filled++ else failed++
                 fill(my, plans, i + 1, now)
             }
-        }, 450)
+        }, 150)
     }
 
     private fun scroll(my: Int) {

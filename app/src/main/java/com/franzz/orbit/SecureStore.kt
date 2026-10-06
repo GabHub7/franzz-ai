@@ -10,13 +10,9 @@ import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
 
-/** API key dienkripsi AES-GCM dengan kunci di Android Keystore. Key tidak pernah di-log. */
+/** Token sesi dienkripsi AES-GCM dengan kunci di Android Keystore. Token tidak pernah di-log. */
 class SecureStore(ctx: Context) {
-    companion object {
-        private const val ALIAS = "franzz_orbit_key"
-        // Nama model BELUM diverifikasi. Bisa diubah di Pengaturan, lalu tekan "Simpan & tes".
-        const val DEFAULT_MODEL = "gemini-3.5-flash"
-    }
+    companion object { private const val ALIAS = "franzz_orbit_key" }
 
     private val prefs = ctx.getSharedPreferences("franzz_orbit", Context.MODE_PRIVATE)
 
@@ -33,25 +29,34 @@ class SecureStore(ctx: Context) {
         return g.generateKey()
     }
 
-    fun saveApiKey(v: String) {
+    private fun putSecret(name: String, v: String?) {
+        if (v == null) { prefs.edit().remove(name).apply(); return }
         val c = Cipher.getInstance("AES/GCM/NoPadding")
         c.init(Cipher.ENCRYPT_MODE, key())
         val out = c.iv + c.doFinal(v.toByteArray())
-        prefs.edit().putString("k", Base64.encodeToString(out, Base64.NO_WRAP)).apply()
+        prefs.edit().putString(name, Base64.encodeToString(out, Base64.NO_WRAP)).apply()
     }
 
-    fun apiKey(): String? = try {
-        val raw = Base64.decode(prefs.getString("k", null) ?: return null, Base64.NO_WRAP)
+    private fun secret(name: String): String? = try {
+        val raw = Base64.decode(prefs.getString(name, null) ?: return null, Base64.NO_WRAP)
         val c = Cipher.getInstance("AES/GCM/NoPadding")
         c.init(Cipher.DECRYPT_MODE, key(), GCMParameterSpec(128, raw.copyOfRange(0, 12)))
         String(c.doFinal(raw, 12, raw.size - 12))
     } catch (e: Exception) { null }
 
-    fun hasKey() = apiKey() != null
+    // ---- sesi login (akun dibuat oleh admin) ----
+    var serverUrl: String
+        get() = prefs.getString("server", "") ?: ""
+        set(v) = prefs.edit().putString("server", v.trim().trimEnd('/')).apply()
+    var username: String
+        get() = prefs.getString("user", "") ?: ""
+        set(v) = prefs.edit().putString("user", v).apply()
+    fun token(): String? = secret("tok")
+    fun saveSession(server: String, user: String, token: String) { serverUrl = server; username = user; putSecret("tok", token) }
+    fun loggedIn() = serverUrl.isNotEmpty() && token() != null
+    fun logout() { putSecret("tok", null) }
 
-    var model: String
-        get() = prefs.getString("model", DEFAULT_MODEL) ?: DEFAULT_MODEL
-        set(v) = prefs.edit().putString("model", v.trim().ifEmpty { DEFAULT_MODEL }).apply()
+    // ---- preferensi ----
     var profile: String
         get() = prefs.getString("profile", "") ?: ""
         set(v) = prefs.edit().putString("profile", v.trim()).apply()
