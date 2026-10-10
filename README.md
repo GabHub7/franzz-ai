@@ -42,3 +42,23 @@ APK yang dihasilkan bertanda tangan debug: aman untuk dipasang sendiri (sideload
 - Tombol 🔊 membacakan ulang jawaban terakhir.
 - Akses mikrofon diminta saat pertama dipakai. Jika izin belum diberikan, buka aplikasi Franzz Orbit dan tekan **Aktifkan izin mikrofon**.
 - Fitur ini memakai speech recognition dan text-to-speech yang tersedia di perangkat. Ini mode push-to-talk, bukan panggilan audio real-time/full-duplex; beberapa perangkat memerlukan layanan pengenalan suara aktif.
+
+
+## Build APK (debug)
+
+### Android Studio (Windows/macOS/Linux)
+1. Extract the project ZIP and open the `franzz-orbit-android` folder in Android Studio.
+2. Use JDK 17. Let Gradle sync finish while the machine has internet access; Gradle 8.9 and Android Gradle Plugin dependencies must be downloaded on the first build.
+3. Install Android SDK Platform 34 and Build Tools 34.0.0 in SDK Manager.
+4. Use **Build > Build APK(s)**. Output: `app/build/outputs/apk/debug/app-debug.apk`.
+
+### Command line
+- Windows: `gradlew.bat assembleDebug`
+- macOS/Linux: `./gradlew assembleDebug`
+
+The Gradle wrapper downloads Gradle from `services.gradle.org` if it is not cached. An error such as `UnknownHostException: services.gradle.org` is a network/DNS failure before source compilation, not a Kotlin compiler error. Retry on a working network. If the build reaches `:app:compileDebugKotlin` and fails, inspect the actual Kotlin compiler lines in Build Output.
+
+### GitHub Actions (alternative build runner)
+This project includes `.github/workflows/android-debug-apk.yml`. Push the source to a GitHub repository, then open **Actions > Build Android APK > Run workflow**. When it succeeds, download the `franzz-orbit-debug-apk` artifact from the workflow run. The APK is a debug build, not a Play Store release-signed APK.
+
+The app version in this source is 1.1.1 (versionCode 3). Speech recognition service visibility is declared for Android 11+.

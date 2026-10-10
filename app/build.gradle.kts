@@ -11,8 +11,8 @@ android {
         applicationId = "id.franzz.orbit"
         minSdk = 26
         targetSdk = 34
-        versionCode = 2
-        versionName = "1.1.0"
+        versionCode = 3
+        versionName = "1.1.1"
         val server = (project.findProperty("ORBIT_SERVER") as String?)?.trim().orEmpty().replace("\\", "").replace("\"", "")
         buildConfigField("String", "DEFAULT_SERVER", "\"$server\"")
     }
