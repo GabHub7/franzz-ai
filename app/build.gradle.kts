@@ -2,25 +2,25 @@ plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
 }
-android {
-    namespace = "com.franzz.orbit"
-    compileSdk = 35
-    defaultConfig {
-        applicationId = "com.franzz.orbit"
-        minSdk = 26
-        targetSdk = 35
-        versionCode = 1
-        versionName = "0.1.0"
-    }
-    buildTypes { release { isMinifyEnabled = false } }
-    compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }
-    kotlinOptions { jvmTarget = "17" }
-}
-dependencies { implementation("androidx.core:core-ktx:1.15.0") }
 
-// Upload lewat web GitHub hanya menambah/menimpa berkas, tidak menghapus. Berkas XML lama ini
-// bentrok dengan resource baru (ic_launcher_fg) dan membuat build gagal "duplicate resources".
-val cleanStaleRes = tasks.register<Delete>("cleanStaleRes") {
-    delete(file("src/main/res/drawable/ic_launcher_fg.xml"))
+android {
+    namespace = "id.franzz.orbit"
+    compileSdk = 34
+
+    defaultConfig {
+        applicationId = "id.franzz.orbit"
+        minSdk = 26
+        targetSdk = 34
+        versionCode = 2
+        versionName = "1.1.0"
+        val server = (project.findProperty("ORBIT_SERVER") as String?)?.trim().orEmpty().replace("\\", "").replace("\"", "")
+        buildConfigField("String", "DEFAULT_SERVER", "\"$server\"")
+    }
+    buildFeatures { buildConfig = true }
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
+    kotlinOptions { jvmTarget = "17" }
+    buildTypes { release { isMinifyEnabled = false } }
 }
-tasks.matching { it.name == "preBuild" }.configureEach { dependsOn(cleanStaleRes) }
