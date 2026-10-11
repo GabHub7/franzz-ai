@@ -1,6 +1,5 @@
-<?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">Franzz Orbit</string>
-    <string name="service_label">Bot Franzz</string>
-    <string name="service_desc">Menampilkan bot Franzz di atas aplikasi atau web apa pun. Isi layar hanya dibaca dan dikirim ke server Orbit milikmu saat kamu mengirim pesan dengan opsi Sertakan layar, atau menekan Isi kolom di bot.</string>
+    <string name="app_name">FRANZZ Orbit</string>
+    <string name="service_label">Bot FRANZZ</string>
+    <string name="service_desc">Menampilkan bot FRANZZ di atas aplikasi lain. Teks layar hanya dibaca saat pengguna menjalankan Analisis AI, Scan &amp; Fill, atau secara eksplisit menyertakan layar ke Chat AI. Kolom password tidak dibaca.</string>
 </resources>

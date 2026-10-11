@@ -25,32 +25,37 @@ import android.widget.TextView
 import android.widget.Toast
 import org.json.JSONObject
 
-/** Layar utama: masuk ke server Orbit, tombol on/off Bot Franzz, status layanan aksesibilitas, dan profil untuk Isi kolom. */
 class MainActivity : Activity() {
     private lateinit var root: LinearLayout
-    private var profileEt: EditText? = null
     private val ui = Handler(Looper.getMainLooper())
+    private var profileEt: EditText? = null
+    private val ink = 0xFF201B49.toInt()
+    private val muted = 0xFF706A8E.toInt()
+    private val accent = 0xFF6B50E5.toInt()
+    private val red = 0xFFB3261E.toInt()
+    private val green = 0xFF18794E.toInt()
 
-    private val ink = 0xFF1B1640.toInt()
-    private val muted = 0xFF5A5780.toInt()
-    private val err = 0xFFB3261E.toInt()
-
-    private fun dp(v: Int): Int = (v * resources.displayMetrics.density).toInt()
+    private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        val sv = ScrollView(this)
-        sv.setBackgroundColor(0xFFF1EFFC.toInt())
-        sv.isFillViewport = true
-        root = LinearLayout(this)
-        root.orientation = LinearLayout.VERTICAL
-        root.setPadding(dp(20), dp(32), dp(20), dp(32))
-        sv.addView(root)
-        setContentView(sv)
+        window.statusBarColor = 0xFFF5F3FF.toInt()
+        window.navigationBarColor = 0xFFF5F3FF.toInt()
+        window.decorView.systemUiVisibility = android.view.View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR or android.view.View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR
         if (intent.getBooleanExtra("requestAudioPermission", false) &&
             checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(arrayOf(Manifest.permission.RECORD_AUDIO), 7402)
         }
+        val scroll = ScrollView(this).apply {
+            setBackgroundColor(0xFFF5F3FF.toInt())
+            isFillViewport = true
+        }
+        root = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(20), dp(24), dp(20), dp(28))
+        }
+        scroll.addView(root)
+        setContentView(scroll)
     }
 
     override fun onResume() {
@@ -65,169 +70,229 @@ class MainActivity : Activity() {
 
     private fun saveProfile() { profileEt?.let { Store.setProfile(this, it.text.toString()) } }
 
-    // ---------------------------------------------------------------- bahan UI
-
-    private fun text(s: String, size: Float, bold: Boolean, color: Int): TextView {
-        val t = TextView(this)
-        t.text = s
-        t.textSize = size
-        t.setTextColor(color)
-        if (bold) t.setTypeface(null, Typeface.BOLD)
-        t.setPadding(0, dp(4), 0, dp(4))
-        return t
+    private fun label(value: String, size: Float, bold: Boolean = false, color: Int = ink): TextView = TextView(this).apply {
+        text = value
+        textSize = size
+        setTextColor(color)
+        if (bold) setTypeface(null, Typeface.BOLD)
+        setPadding(0, dp(3), 0, dp(3))
+        setLineSpacing(dp(2).toFloat(), 1f)
     }
 
-    private fun edit(hint: String, type: Int): EditText {
-        val e = EditText(this)
-        e.hint = hint
-        e.inputType = type
-        e.setTextColor(ink)
-        return e
+    private fun edit(hintText: String, input: Int, minLines: Int = 1): EditText = EditText(this).apply {
+        hint = hintText
+        inputType = input
+        setTextColor(ink)
+        setHintTextColor(0xFF9A94B5.toInt())
+        textSize = 15f
+        this.minLines = minLines
+        setPadding(dp(12), dp(9), dp(12), dp(9))
+        background = rounded(0xFFFFFFFF.toInt(), 0xFFDCD6F3.toInt(), 12)
+        if (minLines > 1) gravity = Gravity.TOP
     }
 
-    private fun button(label: String, primary: Boolean, onClick: () -> Unit): Button {
-        val b = Button(this)
-        b.text = label
-        b.isAllCaps = false
-        b.setTextColor(if (primary) Color.WHITE else ink)
-        val bg = GradientDrawable()
-        bg.cornerRadius = dp(12).toFloat()
-        bg.setColor(if (primary) 0xFF6A4FE0.toInt() else Color.WHITE)
-        if (!primary) bg.setStroke(dp(1), 0xFFCFCBE6.toInt())
-        b.background = bg
-        b.setOnClickListener { onClick() }
-        return b
+    private fun rounded(fill: Int, stroke: Int = 0, radius: Int = 14): GradientDrawable = GradientDrawable().apply {
+        setColor(fill)
+        cornerRadius = dp(radius).toFloat()
+        if (stroke != 0) setStroke(dp(1), stroke)
     }
 
-    private fun gap(h: Int) { root.addView(android.view.View(this), LinearLayout.LayoutParams(1, dp(h))) }
-
-    private fun serviceOn(): Boolean {
-        if (OrbitAccessibilityService.instance != null) return true
-        val flat = Settings.Secure.getString(contentResolver, Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES) ?: return false
-        val cn = ComponentName(this, OrbitAccessibilityService::class.java)
-        return flat.split(':').any { it.equals(cn.flattenToString(), true) || it.equals(cn.flattenToShortString(), true) }
+    private fun button(title: String, primary: Boolean = false, action: () -> Unit): Button = Button(this).apply {
+        text = title
+        isAllCaps = false
+        textSize = 14f
+        setTextColor(if (primary) Color.WHITE else ink)
+        background = rounded(if (primary) accent else Color.WHITE, if (primary) accent else 0xFFDCD6F3.toInt(), 12)
+        minHeight = dp(46)
+        minimumHeight = dp(46)
+        setPadding(dp(14), dp(7), dp(14), dp(7))
+        setOnClickListener { action() }
     }
 
-    private fun openAccessibilitySettings() {
-        Toast.makeText(this, "Nyalakan \"Bot Franzz\" di daftar layanan.", Toast.LENGTH_LONG).show()
-        startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+    private fun card(): LinearLayout = LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL
+        setPadding(dp(16), dp(15), dp(16), dp(15))
+        background = rounded(Color.WHITE, 0xFFE1DCF4.toInt(), 18)
     }
 
-    // ---------------------------------------------------------------- tampilan
+    private fun gap(height: Int) { root.addView(android.view.View(this), LinearLayout.LayoutParams(1, dp(height))) }
 
     private fun render() {
         profileEt = null
         root.removeAllViews()
-        val head = LinearLayout(this)
-        head.orientation = LinearLayout.HORIZONTAL
-        head.gravity = Gravity.CENTER_VERTICAL
-        val robot = ImageView(this)
-        try { robot.setImageBitmap(assets.open("robot.png").use { BitmapFactory.decodeStream(it) }) } catch (e: Exception) { }
-        head.addView(robot, LinearLayout.LayoutParams(dp(56), dp(56)))
-        val ttl = text("Franzz Orbit", 24f, true, ink)
-        ttl.setPadding(dp(12), 0, 0, 0)
-        head.addView(ttl)
-        root.addView(head)
-        gap(12)
+        val header = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+        val robot = ImageView(this).apply {
+            try { setImageBitmap(assets.open("robot.png").use { BitmapFactory.decodeStream(it) }) } catch (_: Exception) { }
+            scaleType = ImageView.ScaleType.FIT_CENTER
+            contentDescription = "Robot FRANZZ"
+        }
+        header.addView(robot, LinearLayout.LayoutParams(dp(58), dp(58)))
+        val heading = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(12), 0, 0, 0) }
+        heading.addView(label("FRANZZ Orbit", 24f, true))
+        heading.addView(label("Asisten AI untuk belajar dan membantu di layar", 12.5f, false, muted))
+        header.addView(heading, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+        root.addView(header)
+        gap(18)
         if (Store.token(this) == null) loginView() else mainView()
+    }
+
+    private fun loginView() {
+        val card = card()
+        card.addView(label("Masuk ke akun", 19f, true))
+        card.addView(label("Gunakan akun FRANZZ Orbit yang sama seperti di website.", 13f, false, muted))
+        gap(12)
+        val server = edit("Alamat server HTTPS", InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI)
+        server.setText(Store.server(this))
+        val user = edit("Username", InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS)
+        user.setText(Store.username(this))
+        val pass = edit("Password", InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD)
+        val msg = label("", 13f, false, red)
+        listOf(server, user, pass).forEach { field ->
+            val lp = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+            lp.topMargin = dp(10)
+            card.addView(field, lp)
+        }
+        card.addView(msg)
+        lateinit var login: Button
+        login = button("Masuk", true) {
+            val base: String
+            try { base = Api.normalizeServer(server.text.toString()) }
+            catch (e: Exception) { msg.text = Api.describe(e); return@button }
+            val username = user.text.toString().trim()
+            val password = pass.text.toString()
+            if (username.isEmpty() || password.isEmpty()) { msg.text = "Isi username dan password."; return@button }
+            msg.text = "Menghubungkan ke server…"
+            val btn = login
+            btn.isEnabled = false
+            Thread {
+                try {
+                    val response = Api.call(this, "/api/login", JSONObject().put("username", username).put("password", password), false, base)
+                    val token = response.optString("token", "")
+                    if (token.isBlank()) throw ApiError(0, "Respons login tidak valid.")
+                    Store.login(this, base, token, response.optString("username", username))
+                    ui.post { OrbitAccessibilityService.instance?.sync(); render() }
+                } catch (e: Exception) {
+                    ui.post { msg.text = Api.describe(e); btn.isEnabled = true }
+                }
+            }.start()
+        }
+        card.addView(login, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(12) })
+        card.addView(button("Cek koneksi server", false) { checkServer(server.text.toString(), msg) },
+            LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(8) })
+        root.addView(card)
+        gap(12)
+        root.addView(label("Catatan: kunci Gemini dan kredensial Firebase tetap tersimpan di server. APK hanya mengirim permintaan melalui HTTPS.", 12.5f, false, muted))
+    }
+
+    private fun checkServer(raw: String, msg: TextView) {
+        val base = try { Api.normalizeServer(raw) } catch (e: Exception) { msg.text = Api.describe(e); return }
+        msg.setTextColor(muted)
+        msg.text = "Memeriksa server dan status Firestore…"
+        Thread {
+            try {
+                val status = Api.get(this, "/api/status", base)
+                val configured = status.optBoolean("configured", false)
+                val panelReady = status.optBoolean("panel", false)
+                val adminReady = status.optBoolean("adminReady", false)
+                val storageError = status.optString("storageError", "")
+                val message = when {
+                    !configured -> status.optString("message", "Konfigurasi server belum lengkap.")
+                    storageError.isNotBlank() -> "Server merespons, tetapi Firestore bermasalah: $storageError"
+                    !panelReady -> "Server online, tetapi Firestore belum siap. Periksa FIREBASE_SERVICE_ACCOUNT_JSON dan izin IAM di Vercel."
+                    !adminReady -> "Firestore siap, tetapi ENV ADMIN_USERNAME / ADMIN_PASSWORD belum terdeteksi oleh server."
+                    else -> "Server dan Firestore siap. Login dan fitur AI bisa diuji."
+                }
+                ui.post {
+                    msg.setTextColor(if (configured && panelReady && storageError.isBlank()) green else red)
+                    msg.text = message
+                }
+            } catch (e: Exception) { ui.post { msg.setTextColor(red); msg.text = Api.describe(e) } }
+        }.start()
+    }
+
+    private fun serviceOn(): Boolean {
+        if (OrbitAccessibilityService.instance != null) return true
+        val enabled = Settings.Secure.getString(contentResolver, Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES) ?: return false
+        val component = ComponentName(this, OrbitAccessibilityService::class.java)
+        return enabled.split(':').any { it.equals(component.flattenToString(), true) || it.equals(component.flattenToShortString(), true) }
+    }
+
+    private fun openAccessibilitySettings() {
+        Toast.makeText(this, "Aktifkan layanan Bot FRANZZ di daftar Aksesibilitas.", Toast.LENGTH_LONG).show()
+        startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+    }
+
+    private fun mainView() {
+        val account = card()
+        account.addView(label("Akun terhubung", 18f, true))
+        account.addView(label("Masuk sebagai ${Store.username(this)}", 13f, false, muted))
+        val status = label("", 13f, true)
+        fun refresh() {
+            val on = serviceOn()
+            status.text = if (on) "Layanan aksesibilitas aktif" else "Layanan aksesibilitas belum aktif"
+            status.setTextColor(if (on) green else red)
+        }
+        val sw = Switch(this).apply {
+            text = "Bot FRANZZ aktif"
+            textSize = 16f
+            setTextColor(ink)
+            isChecked = Store.botOn(this@MainActivity)
+        }
+        sw.setOnCheckedChangeListener { _, on ->
+            Store.setBotOn(this, on)
+            if (on && !serviceOn()) openAccessibilitySettings()
+            refresh()
+        }
+        account.addView(sw)
+        account.addView(status)
+        account.addView(button("Buka pengaturan Aksesibilitas", false) { openAccessibilitySettings() },
+            LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(8) })
+        account.addView(button("Cek koneksi server", false) {
+            val msg = label("Memeriksa…", 13f, false, muted)
+            account.addView(msg)
+            checkServer(Store.server(this), msg)
+        }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(8) })
+        refresh()
+        root.addView(account)
+        gap(12)
+
+        val help = card()
+        help.addView(label("Cara pakai", 18f, true))
+        help.addView(label(
+            "1. Aktifkan layanan Bot FRANZZ di Aksesibilitas. Jika Android memblokirnya, buka Info aplikasi lalu izinkan pengaturan terbatas.\n\n" +
+            "2. Nyalakan Bot FRANZZ aktif. Ketuk robot melayang untuk membuka menu.\n\n" +
+            "3. Di menu yang sama tersedia Scan & Fill, Analisis Halaman AI, Fitur AI, dan Chat AI.\n\n" +
+            "Teks layar dibaca melalui layanan Aksesibilitas, bukan screenshot. Password field diabaikan. Chat hanya menyertakan isi layar jika opsi tersebut dinyalakan; Scan & Fill dan Analisis AI membaca layar saat kamu menjalankannya. Periksa jawaban sebelum diterapkan.",
+            13f, false, muted))
+        root.addView(help)
+        gap(12)
+
+        val profileCard = card()
+        profileCard.addView(label("Profil untuk Scan & Fill", 18f, true))
+        profileCard.addView(label("Isi hanya info yang ingin kamu gunakan saat menjawab formulir. Jangan masukkan password atau data sangat sensitif.", 12.5f, false, muted))
+        val profile = edit("Contoh: kelas XI RPL, minat pemrograman…", InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE, 3)
+        profile.setText(Store.profile(this))
+        profileEt = profile
+        profileCard.addView(profile, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(10) })
+        profileCard.addView(button("Simpan profil", true) {
+            Store.setProfile(this, profile.text.toString())
+            Toast.makeText(this, "Profil disimpan di perangkat.", Toast.LENGTH_SHORT).show()
+        }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(8) })
+        root.addView(profileCard)
+        gap(12)
+        root.addView(button("Keluar", false) {
+            saveProfile()
+            Store.logout(this)
+            OrbitAccessibilityService.instance?.sync()
+            render()
+        })
     }
 
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
         if (requestCode == 7402) {
             val granted = grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED
-            Toast.makeText(this, if (granted) "Izin mikrofon aktif. Kembali ke aplikasi yang ingin kamu gunakan." else "Izin mikrofon ditolak; fitur suara tidak bisa digunakan.", Toast.LENGTH_LONG).show()
+            Toast.makeText(this, if (granted) "Izin mikrofon aktif." else "Izin mikrofon ditolak; fitur suara tidak tersedia.", Toast.LENGTH_LONG).show()
         }
-    }
-
-    private fun loginView() {
-        root.addView(text("Masuk dengan akun Orbit milikmu. Setelah itu robot Franzz bisa muncul di atas web atau aplikasi apa pun.", 14f, false, muted))
-        gap(8)
-        val server = edit("Alamat server (https://…)", InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI)
-        server.setText(Store.server(this))
-        val user = edit("Username", InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS)
-        user.setText(Store.username(this))
-        val pass = edit("Password", InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD)
-        val msg = text("", 13f, false, err)
-        root.addView(server)
-        root.addView(user)
-        root.addView(pass)
-        root.addView(msg)
-        val btn = button("Masuk", true) {}
-        btn.setOnClickListener {
-            val srv = Api.normalizeServer(server.text.toString())
-            val u = user.text.toString().trim()
-            val p = pass.text.toString()
-            if (!srv.startsWith("https://")) { msg.text = "Alamat server harus diawali https://"; return@setOnClickListener }
-            if (u.isEmpty() || p.isEmpty()) { msg.text = "Isi username dan password."; return@setOnClickListener }
-            msg.text = ""
-            btn.isEnabled = false
-            Thread {
-                try {
-                    val r = Api.call(this, "/api/login", JSONObject().put("username", u).put("password", p), false, srv)
-                    val token = r.optString("token", "")
-                    if (token.isEmpty()) throw ApiError(0, "Respons login tidak valid.")
-                    Store.login(this, srv, token, r.optString("username", u))
-                    ui.post { render() }
-                } catch (e: Exception) {
-                    ui.post { msg.text = if (e is ApiError && e.message != null) e.message else Api.describe(e); btn.isEnabled = true }
-                }
-            }.start()
-        }
-        root.addView(btn)
-    }
-
-    private fun mainView() {
-        root.addView(text("Masuk sebagai ${Store.username(this)}", 14f, false, muted))
-        gap(8)
-        val status = text("", 14f, true, ink)
-        fun refresh() {
-            val on = serviceOn()
-            status.text = if (on) "Layanan aksesibilitas: AKTIF ✓" else "Layanan aksesibilitas: BELUM aktif"
-            status.setTextColor(if (on) 0xFF1B7F3B.toInt() else err)
-        }
-        val sw = Switch(this)
-        sw.text = "Bot Franzz aktif"
-        sw.textSize = 18f
-        sw.setTextColor(ink)
-        sw.isChecked = Store.botOn(this)
-        sw.setOnCheckedChangeListener { _, on ->
-            Store.setBotOn(this, on)
-            if (on && !serviceOn()) openAccessibilitySettings()
-            refresh()
-        }
-        root.addView(sw)
-        gap(4)
-        root.addView(status)
-        refresh()
-        root.addView(button("Buka pengaturan aksesibilitas", false) { openAccessibilitySettings() })
-        gap(8)
-        root.addView(button("Aktifkan izin mikrofon", false) {
-            if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
-                Toast.makeText(this, "Izin mikrofon sudah aktif.", Toast.LENGTH_SHORT).show()
-            } else requestPermissions(arrayOf(Manifest.permission.RECORD_AUDIO), 7402)
-        })
-        gap(8)
-        root.addView(text(
-            "Cara pakai\n" +
-            "1. Nyalakan layanan \"Bot Franzz\" di Aksesibilitas. Kalau Android menolak (\"Pengaturan terbatas\"): Info aplikasi Franzz Orbit, titik tiga di kanan atas, lalu Izinkan pengaturan terbatas.\n" +
-            "2. Nyalakan tombol \"Bot Franzz aktif\" di atas. Robot muncul melayang.\n" +
-            "3. Buka web atau aplikasi apa saja, ketuk robot, lalu tanya atau tekan \"Isi kolom di layar\".\n" +
-            "Robot hanya membaca layar saat kamu mengirim pesan dengan opsi Sertakan layar, atau menekan Isi kolom. Kolom password tidak pernah dibaca. Tombol 🎙 bisa dipakai untuk bertanya dengan suara dan jawaban akan dibacakan. Izinkan mikrofon saat diminta.",
-            13f, false, muted))
-        gap(12)
-        root.addView(text("Tentang saya (dipakai untuk \"Isi kolom\")", 14f, true, ink))
-        val prof = edit("Contoh: Nama Budi, kelas XI RPL, hobi coding", InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE)
-        prof.minLines = 3
-        prof.gravity = Gravity.TOP
-        prof.setText(Store.profile(this))
-        profileEt = prof
-        root.addView(prof)
-        gap(16)
-        root.addView(button("Keluar", false) {
-            saveProfile()
-            Store.logout(this)
-            render()
-        })
     }
 }
